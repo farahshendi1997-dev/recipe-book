@@ -1,0 +1,297 @@
+Put your HTML text here<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>دفتر الوصفات</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- SheetJS -->
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <!-- jsPDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-pink-50 text-gray-800 font-sans">
+    <div id="loading" class="fixed inset-0 bg-white bg-opacity-75 flex items-center justify-center z-50 hidden">
+        <div class="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-yellow-500"></div>
+    </div>
+    
+    <header class="bg-yellow-200 p-4 text-center rounded-b-lg shadow-lg">
+        <h1 class="text-3xl font-bold text-gray-800">دفتر الوصفات 🍳</h1>
+        <div id="userIdDisplay" class="text-sm mt-2 text-gray-600"></div>
+    </header>
+
+    <main class="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+        <!-- Add Recipe Form -->
+        <section class="bg-pink-100 p-6 rounded-xl shadow-lg">
+            <h2 class="text-xl font-semibold mb-4 text-center">إضافة وصفة جديدة</h2>
+            <form id="recipeForm" class="space-y-4">
+                <input type="hidden" id="recipeId">
+                <input type="text" placeholder="اسم الوصفة" id="recipeName" class="w-full p-3 rounded-lg border-2 border-pink-200 focus:outline-none focus:border-yellow-400 transition">
+                <textarea placeholder="المكونات (افصل بين المكونات بفاصلة)" id="ingredients" class="w-full p-3 rounded-lg border-2 border-pink-200 focus:outline-none focus:border-yellow-400 transition"></textarea>
+                <textarea placeholder="خطوات التحضير" id="steps" class="w-full p-3 rounded-lg border-2 border-pink-200 focus:outline-none focus:border-yellow-400 transition"></textarea>
+                <div class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-4">
+                    <button type="submit" class="w-full sm:w-1/2 bg-yellow-300 hover:bg-yellow-400 text-gray-800 font-bold px-4 py-3 rounded-lg shadow-md transition">أضف/حفظ الوصفة</button>
+                    <button type="button" id="clearForm" class="w-full sm:w-1/2 bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold px-4 py-3 rounded-lg shadow-md transition">مسح الحقول</button>
+                </div>
+            </form>
+        </section>
+
+        <!-- Recipes List -->
+        <section class="bg-pink-100 p-6 rounded-xl shadow-lg md:col-span-1 lg:col-span-2">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold">قائمة الوصفات</h2>
+                <div class="flex space-x-2">
+                    <button id="exportPDF" class="bg-yellow-300 hover:bg-yellow-400 px-4 py-2 rounded-lg font-bold shadow-md transition">تصدير PDF</button>
+                    <button id="exportExcel" class="bg-yellow-300 hover:bg-yellow-400 px-4 py-2 rounded-lg font-bold shadow-md transition">تصدير Excel</button>
+                </div>
+            </div>
+            <div id="recipesList" class="space-y-4 max-h-[600px] overflow-y-auto">
+                <!-- Recipes will be populated here by JavaScript -->
+            </div>
+        </section>
+
+        <!-- Chart Section -->
+        <section class="col-span-1 md:col-span-2 lg:col-span-3 bg-pink-100 p-6 rounded-xl shadow-lg">
+            <h2 class="text-xl font-semibold mb-4 text-center">إحصائيات الوصفات</h2>
+            <div class="p-4 bg-white rounded-lg shadow-inner">
+                <canvas id="recipesChart"></canvas>
+            </div>
+        </section>
+    </main>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, orderBy, addDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const showLoading = () => document.getElementById('loading').classList.remove('hidden');
+        const hideLoading = () => document.getElementById('loading').classList.add('hidden');
+        
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+        let app, db, auth, userId;
+        let chart;
+        
+        let isAuthReady = false;
+
+        window.onload = async function() {
+            try {
+                showLoading();
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('userIdDisplay').textContent = `ID المستخدم: ${userId}`;
+                        isAuthReady = true;
+                        initFirestoreListener();
+                    } else {
+                        // Handle unauthenticated state if needed, but we'll sign in anonymously
+                    }
+                    hideLoading();
+                });
+
+                if (typeof __initial_auth_token !== 'undefined') {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Error during Firebase initialization or authentication:", error);
+                hideLoading();
+            }
+        };
+
+        function initFirestoreListener() {
+            if (!isAuthReady || !userId) return;
+            const q = collection(db, `artifacts/${appId}/users/${userId}/recipes`);
+            onSnapshot(q, (snapshot) => {
+                const recipes = [];
+                snapshot.forEach(doc => {
+                    recipes.push({ id: doc.id, ...doc.data() });
+                });
+                displayRecipes(recipes);
+                updateChart(recipes);
+            });
+        }
+        
+        function displayRecipes(recipes) {
+            const list = document.getElementById('recipesList');
+            list.innerHTML = '';
+            
+            if (recipes.length === 0) {
+                list.innerHTML = `<div class="p-4 text-center text-gray-500">لا توجد وصفات حتى الآن. أضف واحدة!</div>`;
+                return;
+            }
+            
+            recipes.forEach(r => {
+                const div = document.createElement('div');
+                div.className = "bg-yellow-50 p-4 rounded-lg shadow-md flex flex-col sm:flex-row justify-between items-start sm:items-center";
+                div.innerHTML = `
+                    <div class="flex-grow">
+                        <h3 class="font-bold text-lg">${r.name}</h3>
+                        <p class="text-sm text-gray-600 mt-1"><span class="font-semibold">المكونات:</span> ${r.ingredients}</p>
+                        <p class="text-sm text-gray-600 mt-1"><span class="font-semibold">الخطوات:</span> ${r.steps}</p>
+                    </div>
+                    <div class="flex-shrink-0 flex space-x-2 mt-4 sm:mt-0">
+                        <button onclick="editRecipe('${r.id}')" class="bg-pink-300 hover:bg-pink-400 px-3 py-1 rounded-md text-sm font-semibold transition">تعديل</button>
+                        <button onclick="deleteRecipe('${r.id}')" class="bg-red-400 hover:bg-red-500 text-white px-3 py-1 rounded-md text-sm font-semibold transition">حذف</button>
+                    </div>
+                `;
+                list.appendChild(div);
+            });
+        }
+        
+        document.getElementById('recipeForm').addEventListener('submit', async function(e){
+            e.preventDefault();
+            if (!db || !userId) return console.error("Firestore not initialized or user not authenticated.");
+            
+            showLoading();
+            const recipeId = document.getElementById('recipeId').value;
+            const name = document.getElementById('recipeName').value;
+            const ingredients = document.getElementById('ingredients').value;
+            const steps = document.getElementById('steps').value;
+            
+            const recipe = { name, ingredients, steps, createdAt: new Date() };
+
+            if (recipeId) {
+                // Update existing recipe
+                const docRef = doc(db, `artifacts/${appId}/users/${userId}/recipes`, recipeId);
+                await updateDoc(docRef, recipe);
+            } else {
+                // Add new recipe
+                const colRef = collection(db, `artifacts/${appId}/users/${userId}/recipes`);
+                await addDoc(colRef, recipe);
+            }
+            this.reset();
+            document.getElementById('recipeId').value = '';
+            hideLoading();
+        });
+        
+        document.getElementById('clearForm').addEventListener('click', () => {
+            document.getElementById('recipeForm').reset();
+            document.getElementById('recipeId').value = '';
+        });
+
+        window.deleteRecipe = async (id) => {
+            if (!db || !userId) return console.error("Firestore not initialized or user not authenticated.");
+            showLoading();
+            const docRef = doc(db, `artifacts/${appId}/users/${userId}/recipes`, id);
+            await deleteDoc(docRef);
+            hideLoading();
+        }
+
+        window.editRecipe = async (id) => {
+            if (!db || !userId) return console.error("Firestore not initialized or user not authenticated.");
+            showLoading();
+            const docRef = doc(db, `artifacts/${appId}/users/${userId}/recipes`, id);
+            const docSnap = await getDoc(docRef);
+            
+            if (docSnap.exists()) {
+                const r = docSnap.data();
+                document.getElementById('recipeId').value = id;
+                document.getElementById('recipeName').value = r.name;
+                document.getElementById('ingredients').value = r.ingredients;
+                document.getElementById('steps').value = r.steps;
+            }
+            hideLoading();
+        }
+
+        // Export PDF
+        document.getElementById('exportPDF').addEventListener('click', async () => {
+            if (!db || !userId) return;
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+            
+            // To support Arabic text, you might need a font file. This is a basic approach.
+            doc.setFont('Helvetica', 'normal');
+            
+            let y = 15;
+            const recipesCollection = collection(db, `artifacts/${appId}/users/${userId}/recipes`);
+            const querySnapshot = await getDocs(recipesCollection);
+            
+            querySnapshot.forEach(docSnap => {
+                const r = docSnap.data();
+                doc.text(`الاسم: ${r.name}`, 10, y, { align: 'right' }); y += 10;
+                doc.text(`المكونات: ${r.ingredients}`, 10, y, { align: 'right' }); y += 10;
+                doc.text(`الخطوات: ${r.steps}`, 10, y + 5, { align: 'right' }); y += 20;
+            });
+            
+            doc.save("recipes.pdf");
+        });
+
+        // Export Excel using SheetJS
+        document.getElementById('exportExcel').addEventListener('click', async () => {
+            if (!db || !userId) return;
+            const recipesCollection = collection(db, `artifacts/${appId}/users/${userId}/recipes`);
+            const querySnapshot = await getDocs(recipesCollection);
+            
+            const data = [];
+            querySnapshot.forEach(docSnap => {
+                const recipe = docSnap.data();
+                data.push({
+                    'اسم الوصفة': recipe.name,
+                    'المكونات': recipe.ingredients,
+                    'خطوات التحضير': recipe.steps
+                });
+            });
+            
+            const ws = XLSX.utils.json_to_sheet(data);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Recipes");
+            XLSX.writeFile(wb, "recipes.xlsx");
+        });
+
+        // Chart.js
+        function updateChart(recipes){
+            if (chart) {
+                chart.destroy();
+            }
+            
+            const labels = recipes.map(r => r.name);
+            const data = recipes.map(r => r.ingredients.split(',').length);
+            
+            const ctx = document.getElementById('recipesChart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'عدد المكونات',
+                        data: data,
+                        backgroundColor: 'rgba(255, 206, 86, 0.7)',
+                        borderColor: 'rgba(255, 206, 86, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        x: {
+                            ticks: {
+                                precision: 0
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+    </script>
+</body>
+</html>
